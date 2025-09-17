@@ -1,0 +1,13 @@
+[package]
+
+name = "o"
+version = "0.0.0"
+edition = "2021"
+authors = ["Palash Tyagi (https://github.com/Magnus167)"]
+description = "A customizable command line system monitor."
+license = "MIT"
+repository = "https://github.com/Magnus167/o"
+readme = "README.md"
+categories = ["command-line-utilities", "system"]
+documentation = "https://docs.rs/o"
+homepage = "https://github.com/Magnus167/o"

@@ -54,7 +54,11 @@ fn read_diskstats() -> std::collections::HashMap<String, (u64, u64)> {
             || name.starts_with("vd")
             || name.starts_with("hd")
             || name.starts_with("mmcblk");
-        let is_partition = name.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        let is_partition = name
+            .chars()
+            .last()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
             || name.contains('p');
         if !is_base || is_partition {
             continue;
@@ -170,10 +174,28 @@ fn main() {
             ("Swap:", swap_percent, swap_info),
         ];
 
-        let label_w = rows.iter().map(|(l, _, _)| l.len()).max().unwrap_or(0).max(4);
-        let info_w = rows.iter().map(|(_, _, info)| info.len()).max().unwrap_or(0).max(7);
-        let pct_strings: Vec<String> = rows.iter().map(|(_, pct, _)| format!("{:.1}%", pct)).collect();
-        let pct_w = pct_strings.iter().map(|s| s.len()).max().unwrap_or(0).max(5);
+        let label_w = rows
+            .iter()
+            .map(|(l, _, _)| l.len())
+            .max()
+            .unwrap_or(0)
+            .max(4);
+        let info_w = rows
+            .iter()
+            .map(|(_, _, info)| info.len())
+            .max()
+            .unwrap_or(0)
+            .max(7);
+        let pct_strings: Vec<String> = rows
+            .iter()
+            .map(|(_, pct, _)| format!("{:.1}%", pct))
+            .collect();
+        let pct_w = pct_strings
+            .iter()
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(0)
+            .max(5);
 
         // Compute dynamic bar width to fit a fixed total width box
         let term_width: usize = std::env::var("COLUMNS")
@@ -215,7 +237,11 @@ fn main() {
         // Disk speed (Read/s / Write/s)
         let disk_label_s = format!("{:<width$}", "Disk:", width = label_w);
         let disk_label = disk_label_s.dimmed();
-        let disk_info = format!("{} / {}", fmt_bps(s.disk_read_bps), fmt_bps(s.disk_write_bps));
+        let disk_info = format!(
+            "{} / {}",
+            fmt_bps(s.disk_read_bps),
+            fmt_bps(s.disk_write_bps)
+        );
         let disk_val = format!("{:>width$}", disk_info, width = info_w);
         println!("{} {} {} {}", disk_label, disk_val, blanks_bar, blanks_pct);
 
@@ -226,7 +252,14 @@ fn main() {
 
         let load_label_s = format!("{:<width$}", "Load:", width = label_w);
         let load_label = load_label_s.dimmed();
-        let load_val = format!("{:>width$}", format!("{:.2} {:.2} {:.2}", s.load_avg.0, s.load_avg.1, s.load_avg.2), width = info_w);
+        let load_val = format!(
+            "{:>width$}",
+            format!(
+                "{:.2} {:.2} {:.2}",
+                s.load_avg.0, s.load_avg.1, s.load_avg.2
+            ),
+            width = info_w
+        );
         println!("{} {} {} {}", load_label, load_val, blanks_bar, blanks_pct);
     }
 }

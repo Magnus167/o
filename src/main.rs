@@ -84,17 +84,31 @@ fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
 
     let base_of = |n: &str| -> String {
         if n.starts_with("nvme") {
-            if let Some(pos) = n.rfind('p') { return n[..pos].to_string(); }
+            if let Some(pos) = n.rfind('p') {
+                return n[..pos].to_string();
+            }
         }
         if n.starts_with("mmcblk") {
-            if let Some(pos) = n.rfind('p') { return n[..pos].to_string(); }
+            if let Some(pos) = n.rfind('p') {
+                return n[..pos].to_string();
+            }
         }
-        if (n.starts_with("sd") || n.starts_with("vd") || n.starts_with("hd") || n.starts_with("md"))
-            && n.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        if (n.starts_with("sd")
+            || n.starts_with("vd")
+            || n.starts_with("hd")
+            || n.starts_with("md"))
+            && n.chars()
+                .last()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
         {
             let mut end = n.len();
             for (i, ch) in n.char_indices().rev() {
-                if ch.is_ascii_digit() { end = i; } else { break; }
+                if ch.is_ascii_digit() {
+                    end = i;
+                } else {
+                    break;
+                }
             }
             return n[..end].to_string();
         }
@@ -112,8 +126,10 @@ fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
         let is_partition = base != *name;
         bases.insert(base.clone());
         if is_partition {
-            *part_r2.entry(base.clone()).or_default() = part_r2.get(&base).copied().unwrap_or(0).saturating_add(*r2);
-            *part_w2.entry(base.clone()).or_default() = part_w2.get(&base).copied().unwrap_or(0).saturating_add(*w2);
+            *part_r2.entry(base.clone()).or_default() =
+                part_r2.get(&base).copied().unwrap_or(0).saturating_add(*r2);
+            *part_w2.entry(base.clone()).or_default() =
+                part_w2.get(&base).copied().unwrap_or(0).saturating_add(*w2);
         } else {
             base_r2.insert(base.clone(), *r2);
             base_w2.insert(base, *w2);
@@ -131,8 +147,10 @@ fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
         let is_partition = base != *name;
         bases1.insert(base.clone());
         if is_partition {
-            *part_r1.entry(base.clone()).or_default() = part_r1.get(&base).copied().unwrap_or(0).saturating_add(*r1);
-            *part_w1.entry(base.clone()).or_default() = part_w1.get(&base).copied().unwrap_or(0).saturating_add(*w1);
+            *part_r1.entry(base.clone()).or_default() =
+                part_r1.get(&base).copied().unwrap_or(0).saturating_add(*r1);
+            *part_w1.entry(base.clone()).or_default() =
+                part_w1.get(&base).copied().unwrap_or(0).saturating_add(*w1);
         } else {
             base_r1.insert(base.clone(), *r1);
             base_w1.insert(base, *w1);
@@ -158,7 +176,11 @@ fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
     }
 
     // Sort descending by total throughput
-    devs.sort_by(|a, b| (b.1 + b.2).partial_cmp(&(a.1 + a.2)).unwrap_or(std::cmp::Ordering::Equal));
+    devs.sort_by(|a, b| {
+        (b.1 + b.2)
+            .partial_cmp(&(a.1 + a.2))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     devs
 }
 
@@ -192,17 +214,31 @@ fn collect_summary(sample_ms: u64) -> Summary {
 
     let base_of = |n: &str| -> String {
         if n.starts_with("nvme") {
-            if let Some(pos) = n.rfind('p') { return n[..pos].to_string(); }
+            if let Some(pos) = n.rfind('p') {
+                return n[..pos].to_string();
+            }
         }
         if n.starts_with("mmcblk") {
-            if let Some(pos) = n.rfind('p') { return n[..pos].to_string(); }
+            if let Some(pos) = n.rfind('p') {
+                return n[..pos].to_string();
+            }
         }
-        if (n.starts_with("sd") || n.starts_with("vd") || n.starts_with("hd") || n.starts_with("md"))
-            && n.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        if (n.starts_with("sd")
+            || n.starts_with("vd")
+            || n.starts_with("hd")
+            || n.starts_with("md"))
+            && n.chars()
+                .last()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
         {
             let mut end = n.len();
             for (i, ch) in n.char_indices().rev() {
-                if ch.is_ascii_digit() { end = i; } else { break; }
+                if ch.is_ascii_digit() {
+                    end = i;
+                } else {
+                    break;
+                }
             }
             return n[..end].to_string();
         }
@@ -215,8 +251,10 @@ fn collect_summary(sample_ms: u64) -> Summary {
         let is_partition = base != *name;
         bases.insert(base.clone());
         if is_partition {
-            *part_r2.entry(base.clone()).or_default() = part_r2.get(&base).copied().unwrap_or(0).saturating_add(*r2);
-            *part_w2.entry(base.clone()).or_default() = part_w2.get(&base).copied().unwrap_or(0).saturating_add(*w2);
+            *part_r2.entry(base.clone()).or_default() =
+                part_r2.get(&base).copied().unwrap_or(0).saturating_add(*r2);
+            *part_w2.entry(base.clone()).or_default() =
+                part_w2.get(&base).copied().unwrap_or(0).saturating_add(*w2);
         } else {
             base_r2.insert(base.clone(), *r2);
             base_w2.insert(base, *w2);
@@ -234,8 +272,10 @@ fn collect_summary(sample_ms: u64) -> Summary {
         let is_partition = base != *name;
         bases1.insert(base.clone());
         if is_partition {
-            *part_r1.entry(base.clone()).or_default() = part_r1.get(&base).copied().unwrap_or(0).saturating_add(*r1);
-            *part_w1.entry(base.clone()).or_default() = part_w1.get(&base).copied().unwrap_or(0).saturating_add(*w1);
+            *part_r1.entry(base.clone()).or_default() =
+                part_r1.get(&base).copied().unwrap_or(0).saturating_add(*r1);
+            *part_w1.entry(base.clone()).or_default() =
+                part_w1.get(&base).copied().unwrap_or(0).saturating_add(*w1);
         } else {
             base_r1.insert(base.clone(), *r1);
             base_w1.insert(base, *w1);

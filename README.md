@@ -50,5 +50,5 @@ cargo install --path .
 - From git:
 
 ```bash
-cargo install --git github.com/Magnus167/o
+cargo install --git https://github.com/Magnus167/o
 ```

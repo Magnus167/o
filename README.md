@@ -22,16 +22,33 @@
   - Total/used per mount
 - [ ] Network I/O
   - Tx/Rx
-- [ ] Watch/refresh mode
+- [x] Watch/refresh mode
   - Live updates at an interval
 - [x] Human-readable units
   - KB/MB/GB
 - [ ] Configurable output
   - Flags and env
 
+## Usage
+
+Run:
+
+```bash
+o -h
+```
+
+for the built-in usage and examples.
+
 ## Install
 
 - From source:
-  ```
-  cargo install --path .
-  ```
+
+```bash
+cargo install --path .
+```
+
+- From git:
+
+```bash
+cargo install --git github.com/Magnus167/o
+```

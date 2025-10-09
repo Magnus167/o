@@ -3,12 +3,7 @@ use crate::io_stats::sample_disk_io_detail;
 
 use owo_colors::{OwoColorize, Style};
 
-pub fn print_plain(
-    s: &Summary,
-    io_detail: bool,
-    io_detail_sample_ms: u64,
-    color_enabled: bool,
-) {
+pub fn print_plain(s: &Summary, io_detail: bool, io_detail_sample_ms: u64, color_enabled: bool) {
     // Style helpers that respect color_enabled
     let apply_style = |text: &str, style: Style| -> String {
         if color_enabled {
@@ -168,7 +163,10 @@ pub fn print_plain(
     let load_label = dim(&load_label_s);
     let load_val = format!(
         "{:>width$}",
-        format!("{:.2} {:.2} {:.2}", s.load_avg.0, s.load_avg.1, s.load_avg.2),
+        format!(
+            "{:.2} {:.2} {:.2}",
+            s.load_avg.0, s.load_avg.1, s.load_avg.2
+        ),
         width = info_w
     );
     println!("{} {} {} {}", load_label, load_val, blanks_bar, blanks_pct);

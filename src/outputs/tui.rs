@@ -3,8 +3,7 @@ use std::{
     io::stdout,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
-        Arc,
+        mpsc, Arc,
     },
     thread,
     time::Duration,
@@ -33,7 +32,8 @@ use crate::io_stats::sample_disk_io_detail;
 pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
     enable_raw_mode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    execute!(out, EnterAlternateScreen)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -109,8 +109,8 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
             if event::poll(Duration::from_millis(50))
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
             {
-                if let Event::Key(key) = event::read()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                if let Event::Key(key) =
+                    event::read().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
                 {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => break,
@@ -211,7 +211,12 @@ fn draw_ui(
 
     // Title
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("o", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "o",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" - system monitor"),
     ]))
     .alignment(Alignment::Left);
@@ -232,14 +237,22 @@ fn draw_ui(
 
     let cpu_g = Gauge::default()
         .block(Block::default().title("CPU").borders(Borders::ALL))
-        .gauge_style(Style::default().fg(severity_color(cpu)).add_modifier(Modifier::BOLD))
+        .gauge_style(
+            Style::default()
+                .fg(severity_color(cpu))
+                .add_modifier(Modifier::BOLD),
+        )
         .ratio(cpu)
         .label(format!("{:.1}%", s.cpu_percent));
     f.render_widget(cpu_g, chunks[1]);
 
     let mem_g = Gauge::default()
         .block(Block::default().title("Mem").borders(Borders::ALL))
-        .gauge_style(Style::default().fg(severity_color(mem)).add_modifier(Modifier::BOLD))
+        .gauge_style(
+            Style::default()
+                .fg(severity_color(mem))
+                .add_modifier(Modifier::BOLD),
+        )
         .ratio(mem)
         .label(format!(
             "{:.1}%  ({} / {})",
@@ -251,7 +264,11 @@ fn draw_ui(
 
     let swap_g = Gauge::default()
         .block(Block::default().title("Swap").borders(Borders::ALL))
-        .gauge_style(Style::default().fg(severity_color(swap)).add_modifier(Modifier::BOLD))
+        .gauge_style(
+            Style::default()
+                .fg(severity_color(swap))
+                .add_modifier(Modifier::BOLD),
+        )
         .ratio(swap)
         .label(format!(
             "{:.1}%  ({} / {})",
@@ -273,12 +290,16 @@ fn draw_ui(
             Span::raw("Disk: "),
             Span::styled(
                 fmt_bps(s.disk_read_bps),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" read / "),
             Span::styled(
                 fmt_bps(s.disk_write_bps),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" write"),
         ]))
@@ -319,12 +340,16 @@ fn draw_ui(
             Span::raw("Disk: "),
             Span::styled(
                 fmt_bps(s.disk_read_bps),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" read / "),
             Span::styled(
                 fmt_bps(s.disk_write_bps),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" write"),
         ]))

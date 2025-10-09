@@ -1,5 +1,14 @@
 #![cfg(feature = "tui")]
-use std::io::stdout;
+use std::{
+    io::stdout,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -15,9 +24,12 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::collect::{collect_summary, fmt_bps};
+use crate::collect::{collect_summary, fmt_bps, Summary};
 use crate::io_stats::sample_disk_io_detail;
 
+/// Non-blocking TUI runner with background samplers for system summary and (optional) I/O detail.
+/// - Keystrokes are handled immediately (poll with small timeout)
+/// - Sampling sleeps happen off the UI thread
 pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
     enable_raw_mode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let mut out = stdout();
@@ -26,53 +38,145 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
+    // UI state
     let mut show_help = false;
     let mut show_io_detail = false;
-    let mut refresh_ms = sample_ms.max(1);
 
+    // Shared refresh interval for sampler thread
+    let refresh_ms = Arc::new(AtomicU64::new(sample_ms.max(1)));
+    let refresh_min = 100u64;
+
+    // Sampler thread (produces Summary on a channel)
+    let (sum_tx, sum_rx) = mpsc::channel::<Summary>();
+    let sampler_stop = Arc::new(AtomicBool::new(false));
+    {
+        let refresh_ms = Arc::clone(&refresh_ms);
+        let sampler_stop = Arc::clone(&sampler_stop);
+        thread::spawn(move || {
+            // Initial snapshot to avoid blank UI
+            let initial = collect_summary(refresh_ms.load(Ordering::Relaxed));
+            let _ = sum_tx.send(initial);
+
+            while !sampler_stop.load(Ordering::Relaxed) {
+                let win = refresh_ms.load(Ordering::Relaxed);
+                let s = collect_summary(win);
+                if sum_tx.send(s).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // Optional I/O detail worker (started/stopped on demand)
+    let mut io_rx: Option<mpsc::Receiver<Vec<(String, f64, f64)>>> = None;
+    let mut io_stop: Option<Arc<AtomicBool>> = None;
+    let mut io_thread_alive = false;
+
+    // Last received data
+    let mut last_summary: Option<Summary> = None;
+    let mut last_io_detail: Option<Vec<(String, f64, f64)>> = None;
+
+    // Main UI loop
     let res = (|| -> std::io::Result<()> {
         loop {
-            // Blocking sampling; provides stable rates for CPU/disk over refresh_ms
-            let s = collect_summary(refresh_ms);
+            // Drain any available summaries
+            for s in sum_rx.try_iter() {
+                last_summary = Some(s);
+            }
 
-            terminal.draw(|f| {
-                draw_ui(
-                    f,
-                    &s,
-                    show_help,
-                    show_io_detail,
-                    refresh_ms,
-                    io_detail_sample_ms,
-                )
-            })?;
+            // Drain any available I/O detail
+            if let Some(rx) = &io_rx {
+                for io in rx.try_iter() {
+                    last_io_detail = Some(io);
+                }
+            }
 
-            // Handle input (non-blocking between ticks here, as collect_summary already slept)
-            while event::poll(std::time::Duration::from_millis(0)).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))? {
-                if let Event::Key(key) = event::read().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))? {
+            // Draw if we have a summary
+            if let Some(ref s) = last_summary {
+                terminal.draw(|f| {
+                    draw_ui(
+                        f,
+                        s,
+                        show_help,
+                        show_io_detail,
+                        refresh_ms.load(Ordering::Relaxed),
+                        last_io_detail.as_deref(),
+                    )
+                })?;
+            }
+
+            // Poll input with a short timeout to keep interaction snappy
+            if event::poll(Duration::from_millis(50))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            {
+                if let Event::Key(key) = event::read()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        KeyCode::Char('?') => {
+                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        // Map help to 'h'; keep '?' as an alias
+                        KeyCode::Char('h') | KeyCode::Char('?') => {
                             show_help = !show_help;
                         }
                         KeyCode::Char('i') => {
                             show_io_detail = !show_io_detail;
+                            if show_io_detail {
+                                // Start I/O worker
+                                let (tx, rx) = mpsc::channel::<Vec<(String, f64, f64)>>();
+                                let stop = Arc::new(AtomicBool::new(false));
+                                let stop_clone = Arc::clone(&stop);
+                                let sample_ms = io_detail_sample_ms.max(1);
+                                thread::spawn(move || {
+                                    while !stop_clone.load(Ordering::Relaxed) {
+                                        let data = sample_disk_io_detail(sample_ms);
+                                        if tx.send(data).is_err() {
+                                            break;
+                                        }
+                                    }
+                                });
+                                io_rx = Some(rx);
+                                io_stop = Some(stop);
+                                io_thread_alive = true;
+                                // Drop last I/O data so the UI shows fresh values for the newly enabled panel
+                                last_io_detail = None;
+                            } else {
+                                // Stop I/O worker
+                                if let Some(stop) = io_stop.take() {
+                                    stop.store(true, Ordering::Relaxed);
+                                }
+                                io_rx = None;
+                                io_thread_alive = false;
+                            }
                         }
                         KeyCode::Char('+') => {
                             // faster refresh (smaller window), clamp to 100ms min
-                            let dec = std::cmp::max(50, refresh_ms / 5);
-                            refresh_ms = refresh_ms.saturating_sub(dec).max(100);
+                            let cur = refresh_ms.load(Ordering::Relaxed);
+                            let dec = std::cmp::max(50, cur / 5);
+                            let next = cur.saturating_sub(dec).max(refresh_min);
+                            refresh_ms.store(next, Ordering::Relaxed);
                         }
                         KeyCode::Char('-') | KeyCode::Char('_') => {
                             // slower refresh (larger window)
-                            let inc = std::cmp::max(50, refresh_ms / 5);
-                            refresh_ms = refresh_ms.saturating_add(inc);
+                            let cur = refresh_ms.load(Ordering::Relaxed);
+                            let inc = std::cmp::max(50, cur / 5);
+                            let next = cur.saturating_add(inc);
+                            refresh_ms.store(next, Ordering::Relaxed);
                         }
                         _ => {}
                     }
                 }
             }
         }
+        Ok(())
     })();
+
+    // Stop workers before restoring terminal
+    sampler_stop.store(true, Ordering::Relaxed);
+    if io_thread_alive {
+        if let Some(stop) = io_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
 
     // Restore terminal
     disable_raw_mode().ok();
@@ -88,7 +192,7 @@ fn draw_ui(
     show_help: bool,
     show_io_detail: bool,
     refresh_ms: u64,
-    io_detail_sample_ms: u64,
+    io_detail: Option<&[(String, f64, f64)]>,
 ) {
     let size = f.size();
 
@@ -182,25 +286,29 @@ fn draw_ui(
         .alignment(Alignment::Left);
         f.render_widget(disk, split[0]);
 
-        // Gather IO devices (blocking sample)
+        // I/O detail data (non-blocking; render last received)
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             "Base Device            Read/s         Write/s",
             Style::default().add_modifier(Modifier::BOLD),
         )));
-        for (name, rb, wb) in sample_disk_io_detail(io_detail_sample_ms) {
-            lines.push(Line::from(vec![
-                Span::raw(format!("{:<20}  ", name)),
-                Span::styled(
-                    format!("{:>10}", fmt_bps(rb)),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::raw("    "),
-                Span::styled(
-                    format!("{:>10}", fmt_bps(wb)),
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]));
+        if let Some(devs) = io_detail {
+            for (name, rb, wb) in devs {
+                lines.push(Line::from(vec![
+                    Span::raw(format!("{:<20}  ", name)),
+                    Span::styled(
+                        format!("{:>10}", fmt_bps(*rb)),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw("    "),
+                    Span::styled(
+                        format!("{:>10}", fmt_bps(*wb)),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(Span::raw("Collecting I/O detail...")));
         }
         let detail = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("I/O Detail"))
@@ -228,7 +336,7 @@ fn draw_ui(
     // Footer / hints
     let footer = Paragraph::new(Line::from(vec![
         Span::raw("q: quit  "),
-        Span::raw("?: help  "),
+        Span::raw("h: help  "),
         Span::raw("i: toggle IO detail  "),
         Span::raw("+: faster  "),
         Span::raw("-: slower  "),
@@ -251,7 +359,7 @@ fn draw_ui(
             )),
             Line::from(""),
             Line::from("q: Quit"),
-            Line::from("?: Toggle this help"),
+            Line::from("h: Toggle this help"),
             Line::from("i: Toggle I/O detail panel"),
             Line::from("+: Speed up refresh (smaller sampling window)"),
             Line::from("-: Slow down refresh (larger sampling window)"),

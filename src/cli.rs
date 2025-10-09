@@ -56,7 +56,6 @@ pub struct Args {
     /// Control colorization of plain/text output
     #[arg(long = "color", value_enum, default_value_t = ColorWhen::Auto)]
     pub color: ColorWhen,
-
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

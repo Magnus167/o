@@ -39,22 +39,13 @@ fn main() {
 
     // Plain text modes
     // In plain mode, default to a single snapshot unless --watch is explicitly set.
-    let do_watch = if args.once {
-        false
-    } else {
-        args.watch
-    };
+    let do_watch = if args.once { false } else { args.watch };
 
     if do_watch {
         plain_watch(args);
     } else {
         let s = collect_summary(args.sample_ms);
-        outputs::plain::print_plain(
-            &s,
-            args.io_detail,
-            args.io_sample_ms,
-            args.color_enabled(),
-        );
+        outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
     }
 }
 
@@ -72,12 +63,7 @@ fn plain_watch(args: crate::cli::Args) {
         execute!(&mut stdout, Clear(ClearType::All), MoveTo(0, 0)).ok();
 
         let s: Summary = collect_summary(args.sample_ms);
-        outputs::plain::print_plain(
-            &s,
-            args.io_detail,
-            args.io_sample_ms,
-            args.color_enabled(),
-        );
+        outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
 
         // Flush to ensure the frame is visible
         stdout.flush().ok();

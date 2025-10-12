@@ -20,8 +20,31 @@ use clap::{Parser, ValueEnum};
     version,
     author,
     about = "A customizable command line system monitor.",
-    long_about = "o - customizable command line system monitor\n\nModes:\n  Default: TUI (when built with the `tui` feature). Falls back to plain watch when TUI is unavailable.\n  --plain: force minimal textual renderer (instead of TUI).\n  --once, -1, -o: print one textual snapshot and exit (plain mode only).\n  --json, -j: print one JSON snapshot and exit.\n  --json -w: stream JSON snapshots (newline-delimited).\n\nPlain:\n  Defaults to a single snapshot; pass --watch for continuous updates.\n\nColor:\n  Respects NO_COLOR; override with --color {auto,always,never}.\n\nTUI:\n  Keys: q quit, h help, i toggle I/O detail, + faster, - slower.",
-    after_help = "Examples:\n  o                               # default TUI (when built with feature)\n  o --plain                       # plain watch\n  o --plain -o                    # one plain snapshot\n  o -j                            # one JSON snapshot\n  o -j -w                         # JSON stream\n  o --io-detail --io-sample-ms 3000\n  cargo run --features tui --     # TUI default at runtime",
+    long_about = r#"o - customizable command line system monitor
+
+Modes:
+  Default: TUI (when built with the `tui` feature). Falls back to plain when unavailable.
+  --plain           Force minimal textual renderer.
+  --once, -1, -o    Print one textual snapshot and exit (plain mode only).
+  --json, -j        Print one JSON snapshot and exit.
+  --json -w         Stream JSON snapshots (newline-delimited).
+
+Plain:
+  Defaults to a single snapshot; pass --watch for continuous updates.
+
+Color:
+  Respects NO_COLOR; override with --color {auto,always,never}.
+
+TUI:
+  Keys: q quit, h help, i toggle I/O detail, + faster, - slower."#,
+    after_help = r#"Examples:
+  o                               # default TUI (when built with feature)
+  o --plain                       # plain watch
+  o --plain -o                    # one plain snapshot
+  o -j                            # one JSON snapshot
+  o -j -w                         # JSON stream
+  o --io-detail --io-sample-ms 3000
+  cargo run --features tui --     # TUI default at runtime"#,
     disable_help_subcommand = true
 )]
 pub struct Args {
@@ -67,11 +90,6 @@ pub enum ColorWhen {
 
 impl Args {
     /// Determine whether to colorize our own output (independent from clap's help color).
-    ///
-    /// Policy:
-    /// - Always => true
-    /// - Never  => false
-    /// - Auto   => disabled if NO_COLOR is set; otherwise enabled
     pub fn color_enabled(&self) -> bool {
         match self.color {
             ColorWhen::Always => true,
@@ -83,4 +101,44 @@ impl Args {
 
 pub fn parse() -> Args {
     Args::parse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_sensible() {
+        let a = Args::parse_from(["o"]);
+        assert!(!a.json);
+        assert!(!a.watch);
+        assert!(!a.once);
+        assert!(!a.plain);
+        assert_eq!(a.sample_ms, 1000);
+        assert_eq!(a.io_sample_ms, 2000);
+        assert_eq!(a.color, ColorWhen::Auto);
+    }
+
+    #[test]
+    fn parse_short_flags() {
+        let a = Args::parse_from(["o", "-j", "-w", "-o"]);
+        assert!(a.json);
+        assert!(a.watch);
+        assert!(a.once);
+    }
+
+    #[test]
+    fn color_policy() {
+        let mut a = Args::parse_from(["o"]);
+        a.color = ColorWhen::Always;
+        assert!(a.color_enabled());
+        a.color = ColorWhen::Never;
+        assert!(!a.color_enabled());
+        a.color = ColorWhen::Auto;
+        std::env::remove_var("NO_COLOR");
+        assert!(a.color_enabled());
+        std::env::set_var("NO_COLOR", "1");
+        assert!(!a.color_enabled());
+        std::env::remove_var("NO_COLOR");
+    }
 }

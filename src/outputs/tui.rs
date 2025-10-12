@@ -24,7 +24,7 @@ use ratatui::{
 };
 
 use crate::collect::{collect_summary, fmt_bps, Summary};
-use crate::io_stats::sample_disk_io_detail;
+use crate::io::sample_disk_io_detail;
 
 /// Non-blocking TUI runner with background samplers for system summary and (optional) I/O detail.
 /// - Keystrokes are handled immediately (poll with small timeout)
@@ -445,4 +445,43 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(vert[1]);
 
     hor[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn clamp_ratio_bounds_and_nans() {
+        assert_eq!(super::clamp_ratio(-0.5), 0.0);
+        assert_eq!(super::clamp_ratio(0.0), 0.0);
+        assert!((super::clamp_ratio(0.5) - 0.5).abs() < 1e-9);
+        assert_eq!(super::clamp_ratio(1.5), 1.0);
+        assert_eq!(super::clamp_ratio(f64::NAN), 0.0);
+        assert_eq!(super::clamp_ratio(f64::INFINITY), 0.0); // not finite -> 0.0
+    }
+
+    #[test]
+    fn severity_color_thresholds() {
+        // Note: function expects ratio in [0,1]
+        assert!(matches!(super::severity_color(0.0), Color::Green));
+        assert!(matches!(super::severity_color(0.49), Color::Green));
+        assert!(matches!(super::severity_color(0.50), Color::Yellow));
+        assert!(matches!(super::severity_color(0.79), Color::Yellow));
+        assert!(matches!(super::severity_color(0.80), Color::Red));
+        assert!(matches!(super::severity_color(1.0), Color::Red));
+    }
+
+    #[test]
+    fn centered_rect_geometry() {
+        let outer = Rect::new(0, 0, 100, 50);
+        let inner = super::centered_rect(50, 50, outer);
+        // Expect roughly centered half-size rect
+        assert_eq!(inner.width, 50);
+        assert_eq!(inner.height, 25);
+        // X/Y positions should place it centered
+        assert!(inner.x > 0 && inner.x < 100);
+        assert!(inner.y > 0 && inner.y < 50);
+    }
 }

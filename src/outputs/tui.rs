@@ -10,7 +10,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -109,14 +109,16 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
             if event::poll(Duration::from_millis(50))
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
             {
-                if let Event::Key(key) =
-                    event::read().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-                {
+                let mut handle_key = |key: KeyEvent| -> bool {
+                    if key.kind != KeyEventKind::Press {
+                        return false;
+                    }
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Char('q') | KeyCode::Esc => true,
                         // Map help to 'h'; keep '?' as an alias
                         KeyCode::Char('h') | KeyCode::Char('?') => {
                             show_help = !show_help;
+                            false
                         }
                         KeyCode::Char('i') => {
                             show_io_detail = !show_io_detail;
@@ -147,6 +149,7 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                                 io_rx = None;
                                 io_thread_alive = false;
                             }
+                            false
                         }
                         KeyCode::Char('+') => {
                             // faster refresh (smaller window), clamp to 100ms min
@@ -154,6 +157,7 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                             let dec = std::cmp::max(50, cur / 5);
                             let next = cur.saturating_sub(dec).max(refresh_min);
                             refresh_ms.store(next, Ordering::Relaxed);
+                            false
                         }
                         KeyCode::Char('-') | KeyCode::Char('_') => {
                             // slower refresh (larger window)
@@ -161,9 +165,33 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                             let inc = std::cmp::max(50, cur / 5);
                             let next = cur.saturating_add(inc);
                             refresh_ms.store(next, Ordering::Relaxed);
+                            false
                         }
-                        _ => {}
+                        _ => false,
                     }
+                };
+
+                let mut should_exit = false;
+
+                if let Event::Key(key) =
+                    event::read().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                {
+                    should_exit = handle_key(key);
+                }
+
+                while !should_exit
+                    && event::poll(Duration::from_millis(0))
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                {
+                    if let Event::Key(key) = event::read()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                    {
+                        should_exit = handle_key(key);
+                    }
+                }
+
+                if should_exit {
+                    break;
                 }
             }
         }

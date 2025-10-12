@@ -1,10 +1,5 @@
-mod cli;
-mod collect;
-mod io_stats;
-mod outputs;
-
-use crate::cli::parse;
-use crate::collect::{collect_summary, Summary};
+use o::cli::parse;
+use o::collect::{collect_summary, Summary};
 use std::io::Write;
 
 fn main() {
@@ -29,7 +24,7 @@ fn main() {
     #[cfg(feature = "tui")]
     {
         if !args.plain {
-            if let Err(e) = outputs::tui::run(args.sample_ms, args.io_sample_ms) {
+            if let Err(e) = o::outputs::tui::run(args.sample_ms, args.io_sample_ms) {
                 eprintln!("tui error: {e}");
                 std::process::exit(1);
             }
@@ -45,11 +40,11 @@ fn main() {
         plain_watch(args);
     } else {
         let s = collect_summary(args.sample_ms);
-        outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
+        o::outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
     }
 }
 
-fn plain_watch(args: crate::cli::Args) {
+fn plain_watch(args: o::cli::Args) {
     use crossterm::{
         cursor::MoveTo,
         execute,
@@ -63,7 +58,7 @@ fn plain_watch(args: crate::cli::Args) {
         execute!(&mut stdout, Clear(ClearType::All), MoveTo(0, 0)).ok();
 
         let s: Summary = collect_summary(args.sample_ms);
-        outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
+        o::outputs::plain::print_plain(&s, args.io_detail, args.io_sample_ms, args.color_enabled());
 
         // Flush to ensure the frame is visible
         stdout.flush().ok();

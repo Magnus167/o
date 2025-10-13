@@ -1,7 +1,7 @@
 use serde::Serialize;
 use sysinfo::System;
 
-use crate::io::{base_deltas, read_diskstats};
+use crate::io::{base_deltas, net_deltas, read_diskstats, read_netstats};
 
 #[doc = "Snapshot of system summary used by renderers and JSON output."]
 #[derive(Serialize, Debug, Clone)]
@@ -15,6 +15,8 @@ pub struct Summary {
     pub load_avg: (f64, f64, f64),
     pub disk_read_bps: f64,
     pub disk_write_bps: f64,
+    pub net_rx_bps: f64,
+    pub net_tx_bps: f64,
 }
 
 #[doc = "Format a byte count using binary units (KB/MB/GB/PB), with one decimal place."]
@@ -48,14 +50,16 @@ pub fn collect_summary(sample_ms: u64) -> Summary {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    // Disk snapshot 1
+    // Disk and network snapshots 1
     let d1 = read_diskstats();
+    let n1 = read_netstats();
 
-    // Sample window for CPU and disk rates
+    // Sample window for CPU, disk, and network rates
     let t1 = Instant::now();
     std::thread::sleep(Duration::from_millis(sample_ms.max(1)));
     sys.refresh_cpu();
     let d2 = read_diskstats();
+    let n2 = read_netstats();
     let elapsed = t1.elapsed().as_secs_f64().max(1e-9);
 
     let cpu_percent = sys.global_cpu_info().cpu_usage();
@@ -78,6 +82,18 @@ pub fn collect_summary(sample_ms: u64) -> Summary {
     let disk_read_bps = rdelta as f64 / elapsed;
     let disk_write_bps = wdelta as f64 / elapsed;
 
+    // Compute per-interface network deltas, then totalize
+    let net_deltas_map = net_deltas(&n1, &n2);
+    let mut rx_delta: u64 = 0;
+    let mut tx_delta: u64 = 0;
+    for (_interface, (dr, dt)) in net_deltas_map {
+        rx_delta = rx_delta.saturating_add(dr);
+        tx_delta = tx_delta.saturating_add(dt);
+    }
+
+    let net_rx_bps = rx_delta as f64 / elapsed;
+    let net_tx_bps = tx_delta as f64 / elapsed;
+
     Summary {
         cpu_percent,
         mem_used,
@@ -88,6 +104,8 @@ pub fn collect_summary(sample_ms: u64) -> Summary {
         load_avg: (la.one, la.five, la.fifteen),
         disk_read_bps,
         disk_write_bps,
+        net_rx_bps,
+        net_tx_bps,
     }
 }
 

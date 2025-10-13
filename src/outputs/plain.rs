@@ -1,5 +1,5 @@
 use crate::collect::{fmt_bps, fmt_bytes, Summary};
-use crate::io::sample_disk_io_detail;
+use crate::io::{sample_disk_io_detail, sample_net_io_detail};
 
 use owo_colors::{OwoColorize, Style};
 
@@ -170,6 +170,30 @@ pub fn render_plain(
         }
     }
 
+    // Network speed (RX/s / TX/s)
+    let net_label_s = format!("{:<width$}", "Net:", width = label_w);
+    let net_label = dim(&net_label_s);
+    let net_info = format!("{} / {}", fmt_bps(s.net_rx_bps), fmt_bps(s.net_tx_bps));
+    let net_val = format!("{:>width$}", net_info, width = info_w);
+    out.push_str(&format!(
+        "{} {} {} {}\n",
+        net_label, net_val, blanks_bar, blanks_pct
+    ));
+
+    if io_detail {
+        let interfaces = sample_net_io_detail(io_detail_sample_ms);
+        for (name, rx, tx) in interfaces {
+            let label_s = format!("{:<width$}", "", width = label_w);
+            let label_pad = dim(&label_s);
+            let info = format!("{}: {} / {}", name, fmt_bps(rx), fmt_bps(tx));
+            let info_val = format!("{:>width$}", info, width = info_w);
+            out.push_str(&format!(
+                "{} {} {} {}\n",
+                label_pad, info_val, blanks_bar, blanks_pct
+            ));
+        }
+    }
+
     let up_label_s = format!("{:<width$}", "Up:", width = label_w);
     let up_label = dim(&up_label_s);
     let up_val = format!("{:>width$}", format!("{}s", s.uptime_secs), width = info_w);
@@ -218,6 +242,8 @@ mod tests {
             load_avg: (0.12, 0.34, 0.56),
             disk_read_bps: 2048.0,
             disk_write_bps: 512.0,
+            net_rx_bps: 1024.0,
+            net_tx_bps: 256.0,
         };
         std::env::set_var("COLUMNS", "80");
         let out = render_plain(&s, false, 0, false);
@@ -226,6 +252,7 @@ mod tests {
         assert!(out.contains("Mem:"));
         assert!(out.contains("Swap:"));
         assert!(out.contains("Disk:"));
+        assert!(out.contains("Net:"));
         assert!(out.contains("Up:"));
         assert!(out.contains("Load:"));
     }

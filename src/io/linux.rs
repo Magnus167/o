@@ -1,4 +1,4 @@
-//! Disk I/O helpers: read /proc/diskstats, normalize base device names, and compute deltas.
+//! Disk and network I/O helpers: read /proc/diskstats and /proc/net/dev, normalize device names, and compute deltas.
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -158,6 +158,81 @@ pub fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
     devs
 }
 
+/// Read Linux /proc/net/dev and return a map of interface name to (rx_bytes, tx_bytes).
+pub fn read_netstats() -> HashMap<String, (u64, u64)> {
+    let mut map = HashMap::new();
+    let Ok(content) = std::fs::read_to_string("/proc/net/dev") else {
+        return map;
+    };
+
+    for line in content.lines().skip(2) {
+        // Skip header lines
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 10 {
+            continue;
+        }
+
+        let interface = parts[0].trim_end_matches(':');
+
+        // Skip loopback and other virtual interfaces
+        if interface == "lo" || interface.starts_with("docker") || interface.starts_with("veth") {
+            continue;
+        }
+
+        // RX bytes at index 1, TX bytes at index 9
+        let rx_bytes = parts[1].parse::<u64>().unwrap_or(0);
+        let tx_bytes = parts[9].parse::<u64>().unwrap_or(0);
+
+        map.insert(interface.to_string(), (rx_bytes, tx_bytes));
+    }
+    map
+}
+
+/// Compute network interface deltas between two snapshots.
+/// Returns a map: interface -> (delta_rx_bytes, delta_tx_bytes).
+pub fn net_deltas(
+    prev: &HashMap<String, (u64, u64)>,
+    next: &HashMap<String, (u64, u64)>,
+) -> HashMap<String, (u64, u64)> {
+    let mut keys: HashSet<String> = HashSet::new();
+    keys.extend(prev.keys().cloned());
+    keys.extend(next.keys().cloned());
+
+    let mut out = HashMap::new();
+    for key in keys {
+        let (pr, pt) = prev.get(&key).copied().unwrap_or((0, 0));
+        let (nr, nt) = next.get(&key).copied().unwrap_or((0, 0));
+
+        let dr = nr.saturating_sub(pr);
+        let dt = nt.saturating_sub(pt);
+
+        out.insert(key, (dr, dt));
+    }
+    out
+}
+
+/// Sample per-interface rx/tx rates over a small window.
+/// Returns a sorted list of (interface, rx_bps, tx_bps) by total throughput descending.
+pub fn sample_net_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
+    let n1 = read_netstats();
+    let t1 = Instant::now();
+    std::thread::sleep(Duration::from_millis(sample_ms.max(1)));
+    let n2 = read_netstats();
+    let dt = t1.elapsed().as_secs_f64().max(1e-9);
+
+    let mut interfaces: Vec<(String, f64, f64)> = net_deltas(&n1, &n2)
+        .into_iter()
+        .map(|(name, (r, t))| (name, r as f64 / dt, t as f64 / dt))
+        .collect();
+
+    interfaces.sort_by(|a, b| {
+        (b.1 + b.2)
+            .partial_cmp(&(a.1 + a.2))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    interfaces
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +267,20 @@ mod tests {
         let (r, w) = deltas.get("sda").copied().unwrap();
         // read: max(30, 20) = 30; write: max(40, 40) = 40
         assert_eq!((r, w), (30, 40));
+    }
+
+    #[test]
+    fn net_deltas_calculates_correctly() {
+        let mut prev = HashMap::new();
+        prev.insert("eth0".to_string(), (1000, 500));
+        prev.insert("wlan0".to_string(), (2000, 1000));
+
+        let mut next = HashMap::new();
+        next.insert("eth0".to_string(), (1200, 700)); // +200 rx, +200 tx
+        next.insert("wlan0".to_string(), (2300, 1100)); // +300 rx, +100 tx
+
+        let deltas = net_deltas(&prev, &next);
+        assert_eq!(deltas.get("eth0"), Some(&(200, 200)));
+        assert_eq!(deltas.get("wlan0"), Some(&(300, 100)));
     }
 }

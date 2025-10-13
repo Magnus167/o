@@ -24,7 +24,7 @@ use ratatui::{
 };
 
 use crate::collect::{collect_summary, fmt_bps, Summary};
-use crate::io::sample_disk_io_detail;
+use crate::io::{sample_disk_io_detail, sample_net_io_detail};
 
 /// Non-blocking TUI runner with background samplers for system summary and (optional) I/O detail.
 /// - Keystrokes are handled immediately (poll with small timeout)
@@ -130,7 +130,10 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                                 let sample_ms = io_detail_sample_ms.max(1);
                                 thread::spawn(move || {
                                     while !stop_clone.load(Ordering::Relaxed) {
-                                        let data = sample_disk_io_detail(sample_ms);
+                                        let mut data = sample_disk_io_detail(sample_ms);
+                                        let net_data = sample_net_io_detail(sample_ms);
+                                        // Combine disk and network data
+                                        data.extend(net_data);
                                         if tx.send(data).is_err() {
                                             break;
                                         }
@@ -306,39 +309,58 @@ fn draw_ui(
         ));
     f.render_widget(swap_g, chunks[3]);
 
-    // Disk + IO detail area
+    // Disk + Network + IO detail area
     if show_io_detail {
-        // Split horizontally: left disk summary, right IO devices
+        // Split horizontally: left throughput summary, right IO devices
         let split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(chunks[4]);
 
-        let disk = Paragraph::new(Line::from(vec![
-            Span::raw("Disk: "),
-            Span::styled(
-                fmt_bps(s.disk_read_bps),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" read / "),
-            Span::styled(
-                fmt_bps(s.disk_write_bps),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" write"),
-        ]))
+        let throughput = Paragraph::new(vec![
+            Line::from(vec![
+                Span::raw("Disk: "),
+                Span::styled(
+                    fmt_bps(s.disk_read_bps),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" read / "),
+                Span::styled(
+                    fmt_bps(s.disk_write_bps),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" write"),
+            ]),
+            Line::from(vec![
+                Span::raw("Net:  "),
+                Span::styled(
+                    fmt_bps(s.net_rx_bps),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" rx   / "),
+                Span::styled(
+                    fmt_bps(s.net_tx_bps),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" tx"),
+            ]),
+        ])
         .block(Block::default().borders(Borders::ALL).title("Throughput"))
         .alignment(Alignment::Left);
-        f.render_widget(disk, split[0]);
+        f.render_widget(throughput, split[0]);
 
         // I/O detail data (non-blocking; render last received)
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
-            "Base Device            Read/s         Write/s",
+            "Device / Interface     Read/RX        Write/TX",
             Style::default().add_modifier(Modifier::BOLD),
         )));
         if let Some(devs) = io_detail {
@@ -364,26 +386,45 @@ fn draw_ui(
             .alignment(Alignment::Left);
         f.render_widget(detail, split[1]);
     } else {
-        let disk = Paragraph::new(Line::from(vec![
-            Span::raw("Disk: "),
-            Span::styled(
-                fmt_bps(s.disk_read_bps),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" read / "),
-            Span::styled(
-                fmt_bps(s.disk_write_bps),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" write"),
-        ]))
+        let throughput = Paragraph::new(vec![
+            Line::from(vec![
+                Span::raw("Disk: "),
+                Span::styled(
+                    fmt_bps(s.disk_read_bps),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" read / "),
+                Span::styled(
+                    fmt_bps(s.disk_write_bps),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" write"),
+            ]),
+            Line::from(vec![
+                Span::raw("Net:  "),
+                Span::styled(
+                    fmt_bps(s.net_rx_bps),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" rx   / "),
+                Span::styled(
+                    fmt_bps(s.net_tx_bps),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" tx"),
+            ]),
+        ])
         .block(Block::default().borders(Borders::ALL).title("Throughput"))
         .alignment(Alignment::Left);
-        f.render_widget(disk, chunks[4]);
+        f.render_widget(throughput, chunks[4]);
     }
 
     // Footer / hints

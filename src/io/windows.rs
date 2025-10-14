@@ -144,9 +144,71 @@ pub fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
 /// Query real Windows network interface statistics using GetIfTable2 API.
 #[cfg(target_os = "windows")]
 fn query_windows_network_stats() -> HashMap<String, (u64, u64)> {
-    // For now, return empty data to prevent crashes while we debug the Windows API
-    // TODO: Fix the GetIfTable2 implementation
-    HashMap::new()
+    use windows::Win32::NetworkManagement::IpHelper::{GetIfTable2, FreeMibTable};
+
+    let mut stats = HashMap::new();
+    
+    unsafe {
+        let mut if_table: *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2 = 
+            std::ptr::null_mut();
+        
+        // Get the interface table
+        let result = GetIfTable2(&mut if_table as *mut _);
+        
+        if result.is_ok() && !if_table.is_null() {
+            let table = &*if_table;
+            
+            // Safety check - ensure we don't read beyond the actual table size
+            let num_entries = table.NumEntries as usize;
+            
+            // Iterate through each interface entry
+            for i in 0..num_entries {
+                // Additional bounds check to prevent panics
+                if i >= table.Table.len() {
+                    break;
+                }
+                
+                let row = &table.Table[i];
+                
+                // Only skip loopback interfaces (type 24)
+                if row.Type == 24 {
+                    continue;
+                }
+                
+                // Convert interface alias (friendly name) from UTF-16 to String
+                // The Alias field is a fixed-size array, find the null terminator
+                let alias_len = row.Alias.iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(row.Alias.len());
+                
+                if alias_len > 0 {
+                    let alias_slice = &row.Alias[0..alias_len];
+                    
+                    if let Ok(interface_name) = String::from_utf16(alias_slice) {
+                        let clean_name = interface_name.trim();
+                        
+                        // Skip if name is empty
+                        if clean_name.is_empty() {
+                            continue;
+                        }
+                        
+                        // Get the byte counters
+                        // InOctets = received bytes, OutOctets = transmitted bytes
+                        let rx_bytes = row.InOctets;
+                        let tx_bytes = row.OutOctets;
+                        
+                        // Include all interfaces with valid names
+                        stats.insert(clean_name.to_string(), (rx_bytes, tx_bytes));
+                    }
+                }
+            }
+            
+            // Free the allocated table
+            let _ = FreeMibTable(if_table as *mut _);
+        }
+    }
+    
+    stats
 }
 
 #[cfg(not(target_os = "windows"))]

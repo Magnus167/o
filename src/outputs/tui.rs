@@ -1,4 +1,3 @@
-#![cfg(feature = "tui")]
 use std::{
     io::stdout,
     sync::{
@@ -30,10 +29,9 @@ use crate::io::{sample_disk_io_detail, sample_net_io_detail};
 /// - Keystrokes are handled immediately (poll with small timeout)
 /// - Sampling sleeps happen off the UI thread
 pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
-    enable_raw_mode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    enable_raw_mode().map_err(std::io::Error::other)?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    execute!(out, EnterAlternateScreen).map_err(std::io::Error::other)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -106,9 +104,7 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
             }
 
             // Poll input with a short timeout to keep interaction snappy
-            if event::poll(Duration::from_millis(50))
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-            {
+            if event::poll(Duration::from_millis(50)).map_err(std::io::Error::other)? {
                 let mut handle_key = |key: KeyEvent| -> bool {
                     if key.kind != KeyEventKind::Press {
                         return false;
@@ -176,19 +172,14 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
 
                 let mut should_exit = false;
 
-                if let Event::Key(key) =
-                    event::read().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-                {
+                if let Event::Key(key) = event::read().map_err(std::io::Error::other)? {
                     should_exit = handle_key(key);
                 }
 
                 while !should_exit
-                    && event::poll(Duration::from_millis(0))
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                    && event::poll(Duration::from_millis(0)).map_err(std::io::Error::other)?
                 {
-                    if let Event::Key(key) = event::read()
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
-                    {
+                    if let Event::Key(key) = event::read().map_err(std::io::Error::other)? {
                         should_exit = handle_key(key);
                     }
                 }

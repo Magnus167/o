@@ -18,17 +18,25 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph, Row, Table},
     Frame, Terminal,
 };
 
-use crate::collect::{collect_summary, fmt_bps, Summary};
+use crate::collect::{
+    collect_summary_with_top, fmt_bps, fmt_bytes, top_processes, ProcInfo, ProcSort, Summary,
+};
 use crate::io::{sample_disk_io_detail, sample_net_io_detail};
 
 /// Non-blocking TUI runner with background samplers for system summary and (optional) I/O detail.
 /// - Keystrokes are handled immediately (poll with small timeout)
 /// - Sampling sleeps happen off the UI thread
-pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
+/// - Process panel holds up to `top` rows (10 when `top` is 0); `p` toggles `sort`
+pub fn run(
+    sample_ms: u64,
+    io_detail_sample_ms: u64,
+    top: usize,
+    sort: ProcSort,
+) -> std::io::Result<()> {
     enable_raw_mode().map_err(std::io::Error::other)?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen).map_err(std::io::Error::other)?;
@@ -42,7 +50,10 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
 
     // Shared refresh interval for sampler thread
     let refresh_ms = Arc::new(AtomicU64::new(sample_ms.max(1)));
-    let refresh_min = 100u64;
+    let refresh_min = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() as u64;
+
+    let proc_cap = if top > 0 { top } else { 10 };
+    let sort_mem = Arc::new(AtomicBool::new(sort == ProcSort::Mem));
 
     // Sampler thread (produces Summary on a channel)
     let (sum_tx, sum_rx) = mpsc::channel::<Summary>();
@@ -50,14 +61,19 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
     {
         let refresh_ms = Arc::clone(&refresh_ms);
         let sampler_stop = Arc::clone(&sampler_stop);
+        let sort_mem = Arc::clone(&sort_mem);
         thread::spawn(move || {
             // Initial snapshot to avoid blank UI
-            let initial = collect_summary(refresh_ms.load(Ordering::Relaxed));
+            let initial = collect_summary_with_top(
+                refresh_ms.load(Ordering::Relaxed),
+                proc_cap,
+                sort_of(&sort_mem),
+            );
             let _ = sum_tx.send(initial);
 
             while !sampler_stop.load(Ordering::Relaxed) {
                 let win = refresh_ms.load(Ordering::Relaxed);
-                let s = collect_summary(win);
+                let s = collect_summary_with_top(win, proc_cap, sort_of(&sort_mem));
                 if sum_tx.send(s).is_err() {
                     break;
                 }
@@ -99,6 +115,7 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                         show_io_detail,
                         refresh_ms.load(Ordering::Relaxed),
                         last_io_detail.as_deref(),
+                        sort_of(&sort_mem),
                     )
                 })?;
             }
@@ -150,8 +167,12 @@ pub fn run(sample_ms: u64, io_detail_sample_ms: u64) -> std::io::Result<()> {
                             }
                             false
                         }
+                        KeyCode::Char('p') => {
+                            sort_mem.fetch_xor(true, Ordering::Relaxed);
+                            false
+                        }
                         KeyCode::Char('+') => {
-                            // faster refresh (smaller window), clamp to 100ms min
+                            // faster refresh (smaller window), clamped to the collector's CPU floor
                             let cur = refresh_ms.load(Ordering::Relaxed);
                             let dec = std::cmp::max(50, cur / 5);
                             let next = cur.saturating_sub(dec).max(refresh_min);
@@ -215,6 +236,7 @@ fn draw_ui(
     show_io_detail: bool,
     refresh_ms: u64,
     io_detail: Option<&[(String, f64, f64)]>,
+    sort: ProcSort,
 ) {
     let size = f.size();
 
@@ -300,13 +322,30 @@ fn draw_ui(
         ));
     f.render_widget(swap_g, chunks[3]);
 
+    // Processes take the rows the throughput / I/O panels leave over; the I/O detail list keeps
+    // priority because the user asked for it explicitly.
+    let io_rows = if show_io_detail {
+        (io_detail.map_or(1, |d| d.len()) + 3).max(4)
+    } else {
+        4
+    };
+    let proc_rows = proc_panel_height(chunks[4].height, io_rows, s.processes.len());
+    let lower = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(proc_rows)])
+        .split(chunks[4]);
+    let io_area = lower[0];
+    if proc_rows > 0 {
+        draw_processes(f, lower[1], &s.processes, sort);
+    }
+
     // Disk + Network + IO detail area
     if show_io_detail {
         // Split horizontally: left throughput summary, right IO devices
         let split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[4]);
+            .split(io_area);
 
         let throughput = Paragraph::new(vec![
             Line::from(vec![
@@ -415,7 +454,7 @@ fn draw_ui(
         ])
         .block(Block::default().borders(Borders::ALL).title("Throughput"))
         .alignment(Alignment::Left);
-        f.render_widget(throughput, chunks[4]);
+        f.render_widget(throughput, io_area);
     }
 
     // Footer / hints
@@ -446,6 +485,7 @@ fn draw_ui(
             Line::from("q: Quit"),
             Line::from("h: Toggle this help"),
             Line::from("i: Toggle I/O detail panel"),
+            Line::from("p: Toggle process sort (CPU / memory)"),
             Line::from("+: Speed up refresh (smaller sampling window)"),
             Line::from("-: Slow down refresh (larger sampling window)"),
             Line::from(""),
@@ -457,6 +497,63 @@ fn draw_ui(
         // Clear the area behind overlay
         f.render_widget(Clear, area);
         f.render_widget(help, area);
+    }
+}
+
+/// Panel height: one row per process plus header and borders, without eating into `reserved`
+/// rows. 0 hides the panel when not even one process row fits.
+fn proc_panel_height(avail: u16, reserved: usize, procs: usize) -> u16 {
+    let free = usize::from(avail).saturating_sub(reserved);
+    if procs == 0 || free < 4 {
+        0
+    } else {
+        // Bounded by `free`, which came from a u16.
+        (procs + 3).min(free) as u16
+    }
+}
+
+fn draw_processes(f: &mut Frame<'_>, area: Rect, procs: &[ProcInfo], sort: ProcSort) {
+    let header = Row::new([
+        format!("{:>7}", "PID"),
+        "NAME".to_string(),
+        format!("{:>6}", "CPU%"),
+        format!("{:>9}", "MEM"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+    // Re-sort locally so a `p` press reorders at once instead of after the next sample.
+    let rows = top_processes(procs.to_vec(), procs.len(), sort)
+        .into_iter()
+        .map(|p| {
+            Row::new([
+                format!("{:>7}", p.pid),
+                p.name,
+                format!("{:>6.1}", p.cpu_percent),
+                format!("{:>9}", fmt_bytes(p.mem_bytes)),
+            ])
+        });
+    let by = match sort {
+        ProcSort::Cpu => "CPU",
+        ProcSort::Mem => "memory",
+    };
+    let widths = [
+        Constraint::Length(7),
+        Constraint::Min(4),
+        Constraint::Length(6),
+        Constraint::Length(9),
+    ];
+    let table = Table::new(rows, widths).header(header).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Top processes by {by} (p: toggle)")),
+    );
+    f.render_widget(table, area);
+}
+
+fn sort_of(mem: &AtomicBool) -> ProcSort {
+    if mem.load(Ordering::Relaxed) {
+        ProcSort::Mem
+    } else {
+        ProcSort::Cpu
     }
 }
 
@@ -531,6 +628,55 @@ mod tests {
         assert!(matches!(super::severity_color(0.79), Color::Yellow));
         assert!(matches!(super::severity_color(0.80), Color::Red));
         assert!(matches!(super::severity_color(1.0), Color::Red));
+    }
+
+    #[test]
+    fn processes_panel_shows_when_room_and_hides_when_small() {
+        use ratatui::backend::TestBackend;
+        let s = Summary {
+            cpu_percent: 0.0,
+            mem_used: 0,
+            mem_total: 0,
+            swap_used: 0,
+            swap_total: 0,
+            uptime_secs: 0,
+            load_avg: (0.0, 0.0, 0.0),
+            disk_read_bps: 0.0,
+            disk_write_bps: 0.0,
+            net_rx_bps: 0.0,
+            net_tx_bps: 0.0,
+            processes: vec![
+                ProcInfo {
+                    pid: 1,
+                    name: "small-cpu-big-mem".into(),
+                    cpu_percent: 1.0,
+                    mem_bytes: 9 << 20,
+                },
+                ProcInfo {
+                    pid: 2,
+                    name: "big-cpu".into(),
+                    cpu_percent: 50.0,
+                    mem_bytes: 1 << 20,
+                },
+            ],
+        };
+        let render = |h: u16, sort: ProcSort| {
+            let mut t = Terminal::new(TestBackend::new(80, h)).unwrap();
+            t.draw(|f| draw_ui(f, &s, false, false, 1000, None, sort))
+                .unwrap();
+            let buf = t.backend().buffer();
+            buf.content().iter().map(|c| c.symbol()).collect::<String>()
+        };
+
+        let pos = |hay: &str, needle: &str| hay.find(needle).expect(needle);
+        let by_cpu = render(30, ProcSort::Cpu);
+        assert!(by_cpu.contains("Top processes by CPU") && by_cpu.contains("Disk:"));
+        assert!(pos(&by_cpu, "big-cpu") < pos(&by_cpu, "small-cpu-big-mem"));
+        let by_mem = render(30, ProcSort::Mem);
+        assert!(pos(&by_mem, "small-cpu-big-mem") < pos(&by_mem, "big-cpu"));
+
+        let small = render(15, ProcSort::Cpu);
+        assert!(!small.contains("Top processes") && small.contains("Disk:"));
     }
 
     #[test]

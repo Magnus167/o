@@ -1,5 +1,7 @@
 use clap::{Parser, ValueEnum};
 
+use crate::collect::ProcSort;
+
 /// o - customizable command line system monitor
 ///
 /// Modes:
@@ -36,7 +38,7 @@ Color:
   Respects NO_COLOR; override with --color {auto,always,never}.
 
 TUI:
-  Keys: q quit, h help, i toggle I/O detail, + faster, - slower."#,
+  Keys: q quit, h help, i toggle I/O detail, p toggle process sort, + faster, - slower."#,
     after_help = r#"Examples:
   o                               # default TUI (when built with feature)
   o --plain                       # plain watch
@@ -44,6 +46,7 @@ TUI:
   o -j                            # one JSON snapshot
   o -j -w                         # JSON stream
   o --io-detail --io-sample-ms 3000
+  o --plain -o --top 5 --sort mem # top 5 processes by memory
   cargo run --features tui --     # TUI default at runtime"#,
     disable_help_subcommand = true
 )]
@@ -64,7 +67,7 @@ pub struct Args {
     #[arg(long = "io-detail", short = 'I')]
     pub io_detail: bool,
 
-    /// Sample window for CPU and disk rates (ms)
+    /// Sample window for CPU and disk rates (ms; effective minimum 200)
     #[arg(long = "sample-ms", default_value_t = 1000)]
     pub sample_ms: u64,
 
@@ -75,6 +78,14 @@ pub struct Args {
     /// Force plain text renderer (disables TUI even if available)
     #[arg(long = "plain")]
     pub plain: bool,
+
+    /// Show the top N processes (0 = off for plain/JSON; the TUI shows up to 10 when 0)
+    #[arg(long, short = 't', default_value_t = 0)]
+    pub top: usize,
+
+    /// Sort key for --top
+    #[arg(long, value_enum, default_value_t = ProcSort::Cpu)]
+    pub sort: ProcSort,
 
     /// Control colorization of plain/text output
     #[arg(long = "color", value_enum, default_value_t = ColorWhen::Auto)]
@@ -117,6 +128,8 @@ mod tests {
         assert_eq!(a.sample_ms, 1000);
         assert_eq!(a.io_sample_ms, 2000);
         assert_eq!(a.color, ColorWhen::Auto);
+        assert_eq!(a.top, 0);
+        assert_eq!(a.sort, ProcSort::Cpu);
     }
 
     #[test]

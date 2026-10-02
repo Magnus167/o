@@ -5,7 +5,7 @@
 //!
 //! Layers:
 //! - cli: argument parsing and color policy
-//! - collect: system snapshot (CPU, memory, load, IO totals) and simple format helpers
+//! - collect: system snapshot (CPU, memory, load, IO totals, top processes) and format helpers
 //! - io: disk statistics sampling and base-device aggregation helpers
 //! - outputs: renderers (plain text; optional TUI behind the `tui` feature)
 //!
@@ -31,4 +31,6 @@ pub mod collect;
 pub mod io;
 pub mod outputs;
 
-pub use collect::{collect_summary, fmt_bps, fmt_bytes, Summary};
+pub use collect::{
+    collect_summary, collect_summary_with_top, fmt_bps, fmt_bytes, ProcInfo, ProcSort, Summary,
+};

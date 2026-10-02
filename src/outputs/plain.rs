@@ -1,4 +1,4 @@
-use crate::collect::{fmt_bps, fmt_bytes, Summary};
+use crate::collect::{fmt_bps, fmt_bytes, ProcInfo, Summary};
 use crate::io::{sample_disk_io_detail, sample_net_io_detail};
 
 use owo_colors::{OwoColorize, Style};
@@ -217,6 +217,62 @@ pub fn render_plain(
         load_label, load_val, blanks_bar, blanks_pct
     ));
 
+    if !s.processes.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&render_processes(&s.processes, term_width, color_enabled));
+    }
+
+    out
+}
+
+/// Aligned PID / NAME / CPU% / MEM table; NAME is truncated so a row fits in `term_width`.
+fn render_processes(procs: &[ProcInfo], term_width: usize, color_enabled: bool) -> String {
+    let cpu: Vec<String> = procs
+        .iter()
+        .map(|p| format!("{:.1}", p.cpu_percent))
+        .collect();
+    let mem: Vec<String> = procs.iter().map(|p| fmt_bytes(p.mem_bytes)).collect();
+    let width = |col: &[String], header: &str| {
+        col.iter()
+            .map(String::len)
+            .max()
+            .unwrap_or(0)
+            .max(header.len())
+    };
+    let pid_w = procs
+        .iter()
+        .map(|p| p.pid.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let cpu_w = width(&cpu, "CPU%");
+    let mem_w = width(&mem, "MEM");
+    let longest_name = procs
+        .iter()
+        .map(|p| p.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let name_w = term_width
+        .saturating_sub(pid_w + cpu_w + mem_w + 3)
+        .min(longest_name)
+        .max(4);
+
+    let header = format!(
+        "{:>pid_w$} {:<name_w$} {:>cpu_w$} {:>mem_w$}",
+        "PID", "NAME", "CPU%", "MEM"
+    );
+    let mut out = if color_enabled {
+        format!("{}", header.bold())
+    } else {
+        header
+    };
+    for (i, p) in procs.iter().enumerate() {
+        let name: String = p.name.chars().take(name_w).collect();
+        out.push_str(&format!(
+            "\n{:>pid_w$} {:<name_w$} {:>cpu_w$} {:>mem_w$}",
+            p.pid, name, cpu[i], mem[i]
+        ));
+    }
     out
 }
 
@@ -244,6 +300,7 @@ mod tests {
             disk_write_bps: 512.0,
             net_rx_bps: 1024.0,
             net_tx_bps: 256.0,
+            processes: Vec::new(),
         };
         std::env::set_var("COLUMNS", "80");
         let out = render_plain(&s, false, 0, false);
@@ -255,5 +312,31 @@ mod tests {
         assert!(out.contains("Net:"));
         assert!(out.contains("Up:"));
         assert!(out.contains("Load:"));
+        assert!(!out.contains("PID"));
+    }
+
+    #[test]
+    fn render_processes_aligns_and_truncates_names() {
+        let procs = [
+            ProcInfo {
+                pid: 7,
+                name: "a-very-long-process-name".into(),
+                cpu_percent: 12.5,
+                mem_bytes: 2048,
+            },
+            ProcInfo {
+                pid: 12345,
+                name: "sh".into(),
+                cpu_percent: 0.0,
+                mem_bytes: 0,
+            },
+        ];
+        let out = render_processes(&procs, 30, false);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.chars().count() == 30), "{out}");
+        assert!(lines[0].contains("PID") && lines[0].ends_with("MEM"));
+        assert!(lines[1].contains("a-very-long-") && !out.contains("process-name"));
+        assert!(lines[1].ends_with("12.5 2.0KB"));
     }
 }

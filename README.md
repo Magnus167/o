@@ -20,7 +20,7 @@
   - Adjustable sampling window (`--sample-ms N`)
 - [ ] Disk usage
   - Total/used per mount
-- [ ] Network I/O
+- [x] Network I/O
   - Tx/Rx
 - [x] Watch/refresh mode
   - Live updates at an interval

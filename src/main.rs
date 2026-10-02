@@ -23,7 +23,9 @@ fn main() {
     // Default to TUI when available (unless --plain), otherwise fall back to plain
     #[cfg(feature = "tui")]
     {
-        if !args.plain {
+        use std::io::IsTerminal;
+        // A pipe or redirect has no terminal to draw on, so fall back to plain output.
+        if !args.plain && std::io::stdout().is_terminal() {
             if let Err(e) = o::outputs::tui::run(args.sample_ms, args.io_sample_ms) {
                 eprintln!("tui error: {e}");
                 std::process::exit(1);

@@ -12,15 +12,15 @@
   - Threshold highlighting
   - Inline usage bars
   - Aligned columns
-- [ ] Top processes
-  - Show top N by CPU or memory
+- [x] Top processes
+  - Show top N by CPU or memory (`--top N --sort cpu|mem`; `p` toggles sort in the TUI)
 - [x] Disk speed
   - Read/write B/s
   - Per-device detail (`-I`, `--io-detail`)
   - Adjustable sampling window (`--sample-ms N`)
 - [ ] Disk usage
   - Total/used per mount
-- [ ] Network I/O
+- [x] Network I/O
   - Tx/Rx
 - [x] Watch/refresh mode
   - Live updates at an interval

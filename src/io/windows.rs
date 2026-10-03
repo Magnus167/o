@@ -1,94 +1,65 @@
+//! Disk and network I/O helpers for Windows: read cumulative per-physical-drive and per-interface byte counters, and compute deltas.
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-/// Windows disk and network I/O monitoring using Performance Counters and system APIs
-/// This provides cumulative read/write byte counters for each logical disk and network interface.
+use windows::core::HSTRING;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows::Win32::System::Ioctl::{DISK_PERFORMANCE, IOCTL_DISK_PERFORMANCE};
+use windows::Win32::System::IO::DeviceIoControl;
 
-#[cfg(target_os = "windows")]
-fn query_windows_disk_stats() -> HashMap<String, (u64, u64)> {
-    use std::ffi::CString;
-
-    let mut stats = HashMap::new();
-
-    // Try to get logical disk performance data
-    // This is a simplified implementation - we'll enumerate common drive letters
-    let drive_letters = [
-        'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
-        'U', 'V', 'W', 'X', 'Y', 'Z',
-    ];
-
-    for letter in drive_letters {
-        let drive_path = format!("{}:\\", letter);
-
-        // Check if drive exists using GetDriveType
-        let drive_type = unsafe {
-            let path_cstr = CString::new(drive_path.clone()).unwrap();
-            windows::Win32::Storage::FileSystem::GetDriveTypeA(windows::core::PCSTR(
-                path_cstr.as_ptr() as *const u8,
-            ))
-        };
-
-        // Only process fixed drives (hard disks) - DRIVE_FIXED = 3
-        if drive_type == 3 {
-            // For now, we'll simulate some basic I/O stats
-            // In a full implementation, we would query performance counters here
-            let simulated_read_bytes = get_drive_usage_simulation(&drive_path).0;
-            let simulated_write_bytes = get_drive_usage_simulation(&drive_path).1;
-
-            stats.insert(
-                format!("{}:", letter),
-                (simulated_read_bytes, simulated_write_bytes),
-            );
-        }
+/// Cumulative (read_bytes, write_bytes) of `\\.\PhysicalDrive{index}`, or `None` if it cannot be opened or queried.
+fn physical_drive_bytes(index: u32) -> Option<(u64, u64)> {
+    let path = HSTRING::from(format!(r"\\.\PhysicalDrive{index}"));
+    // IOCTL_DISK_PERFORMANCE is FILE_ANY_ACCESS, so a zero-access handle is enough and needs no admin rights.
+    let handle = unsafe {
+        CreateFileW(
+            &path,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            HANDLE::default(),
+        )
     }
+    .ok()?;
 
-    stats
+    let mut perf = DISK_PERFORMANCE::default();
+    let size = std::mem::size_of::<DISK_PERFORMANCE>() as u32;
+    let mut returned = 0u32;
+    let queried = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_DISK_PERFORMANCE,
+            None,
+            0,
+            Some((&mut perf as *mut DISK_PERFORMANCE).cast()),
+            size,
+            Some(&mut returned),
+            None,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+
+    if queried.is_err() || returned != size {
+        return None;
+    }
+    Some((
+        u64::try_from(perf.BytesRead).ok()?,
+        u64::try_from(perf.BytesWritten).ok()?,
+    ))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn query_windows_disk_stats() -> HashMap<String, (u64, u64)> {
-    HashMap::new()
-}
-
-// Temporary simulation function - replace with real performance counter queries
-fn get_drive_usage_simulation(drive_path: &str) -> (u64, u64) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Get current time in milliseconds for more granular changes
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    // Create pseudo-random but consistent values based on drive letter and time
-    let drive_hash = drive_path.chars().next().unwrap_or('C') as u64;
-
-    // MUCH more realistic background I/O rates (KB/s, not MB/s!)
-    // Typical idle system: 5-50 KB/s per drive for background OS activity
-    let base_read_rate = 8_192 + ((drive_hash * 4_096) % 32_768); // 8-40 KB/s read
-    let base_write_rate = 4_096 + ((drive_hash * 2_048) % 16_384); // 4-20 KB/s write
-
-    // Convert to cumulative bytes (simulating since boot)
-    let seconds_uptime = now_ms / 1000;
-    let read_bytes = seconds_uptime * base_read_rate + (now_ms % 1000) * base_read_rate / 1000;
-    let write_bytes = seconds_uptime * base_write_rate + (now_ms % 1000) * base_write_rate / 1000;
-
-    // Add small variation (±20%) to simulate realistic fluctuations
-    let variation_factor = ((now_ms / 3000) % 5) as i64 - 2; // -2 to +2
-    let read_variation =
-        (base_read_rate as i64 * variation_factor / 10).max(-(base_read_rate as i64 / 2));
-    let write_variation =
-        (base_write_rate as i64 * variation_factor / 10).max(-(base_write_rate as i64 / 2));
-
-    let read_with_variation = (read_bytes as i64 + read_variation).max(0) as u64;
-    let write_with_variation = (write_bytes as i64 + write_variation).max(0) as u64;
-
-    (read_with_variation, write_with_variation)
-}
-
-/// Read Windows disk stats and return per-device totals of (read_bytes, write_bytes).
+/// Read cumulative (read_bytes, write_bytes) per physical drive, keyed `PhysicalDriveN`.
 pub fn read_diskstats() -> HashMap<String, (u64, u64)> {
-    query_windows_disk_stats()
+    // Drive numbers can have gaps (e.g. after a hot-unplug), so probe a fixed range instead of
+    // stopping at the first missing drive; drives numbered 64 and above are not reported.
+    (0..64)
+        .filter_map(|n| Some((format!("PhysicalDrive{n}"), physical_drive_bytes(n)?)))
+        .collect()
 }
 
 /// On Windows there is no partition suffix to strip; return the identifier unchanged.
@@ -141,85 +112,17 @@ pub fn sample_disk_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
     devs
 }
 
-/// Query real Windows network interface statistics using GetIfTable2 API.
-#[cfg(target_os = "windows")]
-fn query_windows_network_stats() -> HashMap<String, (u64, u64)> {
-    use windows::Win32::NetworkManagement::IpHelper::{GetIfTable2, FreeMibTable};
-
-    let mut stats = HashMap::new();
-    
-    unsafe {
-        let mut if_table: *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2 = 
-            std::ptr::null_mut();
-        
-        // Get the interface table
-        let result = GetIfTable2(&mut if_table as *mut _);
-        
-        if result.is_ok() && !if_table.is_null() {
-            let table = &*if_table;
-            
-            // Safety check - ensure we don't read beyond the actual table size
-            let num_entries = table.NumEntries as usize;
-            
-            // Iterate through each interface entry
-            for i in 0..num_entries {
-                // Additional bounds check to prevent panics
-                if i >= table.Table.len() {
-                    break;
-                }
-                
-                let row = &table.Table[i];
-                
-                // Only skip loopback interfaces (type 24)
-                if row.Type == 24 {
-                    continue;
-                }
-                
-                // Convert interface alias (friendly name) from UTF-16 to String
-                // The Alias field is a fixed-size array, find the null terminator
-                let alias_len = row.Alias.iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(row.Alias.len());
-                
-                if alias_len > 0 {
-                    let alias_slice = &row.Alias[0..alias_len];
-                    
-                    if let Ok(interface_name) = String::from_utf16(alias_slice) {
-                        let clean_name = interface_name.trim();
-                        
-                        // Skip if name is empty
-                        if clean_name.is_empty() {
-                            continue;
-                        }
-                        
-                        // Get the byte counters
-                        // InOctets = received bytes, OutOctets = transmitted bytes
-                        let rx_bytes = row.InOctets;
-                        let tx_bytes = row.OutOctets;
-                        
-                        // Include all interfaces with valid names
-                        stats.insert(clean_name.to_string(), (rx_bytes, tx_bytes));
-                    }
-                }
-            }
-            
-            // Free the allocated table
-            let _ = FreeMibTable(if_table as *mut _);
-        }
-    }
-    
-    stats
-}
-
-#[cfg(not(target_os = "windows"))]
-fn query_windows_network_stats() -> HashMap<String, (u64, u64)> {
-    HashMap::new()
-}
-
-/// Read Windows network interface stats and return a map of interface name to (rx_bytes, tx_bytes).
-/// Uses the Windows GetIfTable2 API to get real network statistics.
+/// Read cumulative (rx_bytes, tx_bytes) per connected network adapter, keyed by its alias (e.g. `Ethernet`).
 pub fn read_netstats() -> HashMap<String, (u64, u64)> {
-    query_windows_network_stats()
+    sysinfo::Networks::new_with_refreshed_list()
+        .iter()
+        .map(|(name, data)| {
+            (
+                name.clone(),
+                (data.total_received(), data.total_transmitted()),
+            )
+        })
+        .collect()
 }
 
 /// Compute network interface deltas between two snapshots.
@@ -270,121 +173,10 @@ pub fn sample_net_io_detail(sample_ms: u64) -> Vec<(String, f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
-    use std::path::Path;
-
-    const TEST_DIR: &str = "_tmp_tests";
-
-    fn setup_test_dir() -> std::io::Result<()> {
-        if !Path::new(TEST_DIR).exists() {
-            fs::create_dir_all(TEST_DIR)?;
-        }
-        Ok(())
-    }
-
-    fn cleanup_test_dir() {
-        let _ = fs::remove_dir_all(TEST_DIR);
-    }
 
     #[test]
-    fn test_realistic_io_simulation_rates() {
-        // Test that our simulation generates realistic I/O rates (KB/s, not MB/s)
-        let stats1 = get_drive_usage_simulation("C:\\");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let stats2 = get_drive_usage_simulation("C:\\");
-
-        let read_delta = stats2.0.saturating_sub(stats1.0);
-        let write_delta = stats2.1.saturating_sub(stats1.1);
-
-        // Over 100ms, expect at most a few KB (reasonable background I/O)
-        // Max reasonable rate: ~100 KB/s → 10KB in 100ms
-        assert!(
-            read_delta < 20_000,
-            "Read delta too high: {} bytes in 100ms",
-            read_delta
-        );
-        assert!(
-            write_delta < 20_000,
-            "Write delta too high: {} bytes in 100ms",
-            write_delta
-        );
-
-        // Should show some activity (not zero)
-        assert!(read_delta > 0, "Should show some read activity");
-        assert!(write_delta > 0, "Should show some write activity");
-    }
-
-    #[test]
-    fn test_cumulative_counters_increase() {
-        // Test that cumulative counters always increase over time
-        let stats1 = get_drive_usage_simulation("C:\\");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let stats2 = get_drive_usage_simulation("C:\\");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let stats3 = get_drive_usage_simulation("C:\\");
-
-        assert!(
-            stats2.0 >= stats1.0,
-            "Read counter should increase over time"
-        );
-        assert!(
-            stats2.1 >= stats1.1,
-            "Write counter should increase over time"
-        );
-        assert!(
-            stats3.0 >= stats2.0,
-            "Read counter should continue increasing"
-        );
-        assert!(
-            stats3.1 >= stats2.1,
-            "Write counter should continue increasing"
-        );
-    }
-
-    #[test]
-    fn test_file_io_with_known_size() -> std::io::Result<()> {
-        use std::env;
-
-        // Use absolute path from current working directory
-        let current_dir = env::current_dir()?;
-        let test_dir = current_dir.join(TEST_DIR);
-
-        // Create test directory if it doesn't exist
-        if !test_dir.exists() {
-            fs::create_dir_all(&test_dir)?;
-        }
-
-        let test_file = test_dir.join("test_file.txt");
-        let test_data = "A".repeat(1024); // 1KB of data
-
-        // Write test file
-        {
-            let mut file = fs::File::create(&test_file)?;
-            file.write_all(test_data.as_bytes())?;
-            file.sync_all()?; // Ensure data is written to disk
-        }
-
-        // Read test file back
-        let read_data = fs::read_to_string(&test_file)?;
-
-        // Verify file operations
-        assert_eq!(
-            read_data.len(),
-            1024,
-            "File should contain exactly 1024 bytes"
-        );
-        assert_eq!(read_data, test_data, "Read data should match written data");
-
-        // Test that file exists and has correct size
-        let metadata = fs::metadata(&test_file)?;
-        assert_eq!(metadata.len(), 1024, "File size should be 1024 bytes");
-
-        // Cleanup
-        fs::remove_file(&test_file)?;
-        let _ = fs::remove_dir_all(&test_dir); // Best effort cleanup
-
-        Ok(())
+    fn test_base_device_name_unchanged() {
+        assert_eq!(base_device_name("PhysicalDrive0"), "PhysicalDrive0");
     }
 
     #[test]
@@ -404,118 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_disk_io_detail_realistic_rates() {
-        // Test that sample_disk_io_detail returns reasonable rates
-        let sample_result = sample_disk_io_detail(100); // 100ms sample
-
-        for (device, read_bps, write_bps) in sample_result {
-            // Realistic background I/O should be in KB/s range, not MB/s
-            assert!(
-                read_bps < 200_000.0,
-                "Read rate too high for {}: {:.1} B/s",
-                device,
-                read_bps
-            );
-            assert!(
-                write_bps < 200_000.0,
-                "Write rate too high for {}: {:.1} B/s",
-                device,
-                write_bps
-            );
-
-            // Should show some activity
-            assert!(
-                read_bps > 0.0,
-                "Should show some read activity for {}",
-                device
-            );
-            assert!(
-                write_bps > 0.0,
-                "Should show some write activity for {}",
-                device
-            );
-
-            // Device names should be valid Windows drive letters
-            assert!(
-                device.ends_with(':'),
-                "Device name should end with colon: {}",
-                device
-            );
-            assert!(
-                device.len() == 2,
-                "Device name should be 2 characters: {}",
-                device
-            );
-        }
-    }
-
-    #[test]
-    fn test_large_file_io_stress() -> std::io::Result<()> {
-        setup_test_dir()?;
-
-        let test_file = format!("{}/large_test_file.bin", TEST_DIR);
-        let test_size = 10 * 1024; // 10KB file
-        let test_data = vec![0xAA; test_size];
-
-        // Write large test file
-        fs::write(&test_file, &test_data)?;
-
-        // Read it back in chunks
-        let read_data = fs::read(&test_file)?;
-
-        assert_eq!(read_data.len(), test_size);
-        assert_eq!(read_data, test_data);
-
-        // Test multiple small reads
-        let mut file = fs::File::open(&test_file)?;
-        let mut buffer = [0u8; 256];
-        let mut total_read = 0;
-
-        loop {
-            use std::io::Read;
-            let bytes_read = file.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            total_read += bytes_read;
-        }
-
-        assert_eq!(total_read, test_size);
-
-        // Cleanup
-        fs::remove_file(&test_file)?;
-        cleanup_test_dir();
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_real_network_stats() {
-        // Test that we can read network statistics without panicking
-        let stats = read_netstats();
-        
-        // Should return some data structure (may be empty if no interfaces)
-        // The main thing is that it doesn't crash
-        
-        // If we have interfaces, verify the data makes sense
-        for (interface_name, (rx_bytes, tx_bytes)) in &stats {
-            assert!(!interface_name.is_empty(), "Interface name should not be empty");
-            // Counters should be valid (can be 0 for unused interfaces)
-            assert!(rx_bytes >= &0, "RX bytes should be non-negative");
-            assert!(tx_bytes >= &0, "TX bytes should be non-negative");
-        }
-        
-        // Test that we can call it twice without issues
-        let stats2 = read_netstats();
-        
-        // Verify interface lists are consistent (same interfaces present)
-        for interface_name in stats.keys() {
-            assert!(stats2.contains_key(interface_name), 
-                   "Interface {} should be present in both calls", interface_name);
-        }
-    }
-
-    #[test]
     fn test_net_deltas_calculation() {
         let mut prev = HashMap::new();
         prev.insert("Ethernet".to_string(), (1000, 500));
@@ -530,29 +210,21 @@ mod tests {
         assert_eq!(deltas.get("Wi-Fi"), Some(&(300, 100)));
     }
 
+    // Reads the host's live counters; run on a Windows machine with `cargo test -- --ignored`.
     #[test]
-    fn test_sample_net_io_detail_realistic_rates() {
-        let sample_result = sample_net_io_detail(100); // 100ms sample
-
-        // Test should not panic and should return valid data
-        for (interface, rx_bps, tx_bps) in sample_result {
-            // Network I/O rates should be non-negative
-            assert!(
-                rx_bps >= 0.0,
-                "RX rate should be non-negative for {}: {:.1} B/s",
-                interface,
-                rx_bps
-            );
-            assert!(
-                tx_bps >= 0.0,
-                "TX rate should be non-negative for {}: {:.1} B/s",
-                interface,
-                tx_bps
-            );
-
-            // Interface names should be reasonable
-            assert!(!interface.is_empty(), "Interface name should not be empty");
-            assert!(interface.len() <= 128, "Interface name should not be excessively long");
+    #[ignore]
+    fn test_live_counters_never_decrease() {
+        let (disks, nets) = (read_diskstats(), read_netstats());
+        assert!(
+            !disks.is_empty(),
+            "no physical drive answered IOCTL_DISK_PERFORMANCE (Windows Server needs `diskperf -y`)"
+        );
+        for (before, after) in [(disks, read_diskstats()), (nets, read_netstats())] {
+            for (name, (r1, w1)) in &before {
+                if let Some((r2, w2)) = after.get(name) {
+                    assert!(r2 >= r1 && w2 >= w1, "{name} counters went backwards");
+                }
+            }
         }
     }
 }

@@ -64,6 +64,7 @@ pub fn base_device_name(name: &str) -> String {
 /// For each base device, the delta is the max of:
 /// - delta of the base device itself, and
 /// - aggregated deltas of all its partitions.
+///
 /// Returns a map: base_device -> (delta_read_bytes, delta_write_bytes).
 pub fn base_deltas(
     prev: &HashMap<String, (u64, u64)>,
